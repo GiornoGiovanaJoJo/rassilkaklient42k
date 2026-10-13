@@ -176,8 +176,50 @@ jobs:
           printf '%s\n' "$APP_ENV" | sshpass -e ssh -p "$PORT" \
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=120 -o ServerAliveInterval=30 \
-            "$USER@$HOST" "mkdir -p '$DEPLOY_PATH' && cat > '$DEPLOY_PATH/.env' && chmod 600 '$DEPLOY_PATH/.env'"
+            "$USER@$HOST" "mkdir -p '$DEPLOY_PATH' && cat > '$DEPLOY_PATH/.env.incoming'"
+
+          sshpass -e ssh -p "$PORT" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=120 -o ServerAliveInterval=30 \
+            "$USER@$HOST" DEPLOY_PATH="$DEPLOY_PATH" bash -s <<'REMOTE'
+          set -e
+          cd "$DEPLOY_PATH"
+
+          # Пароль базы и ключ подписи сессий НЕ хранятся в секрете APP_ENV, а
+          # живут только на сервере. Причина не в скрытности, а в том, что их
+          # нельзя менять задним числом: пароль задаётся при первичной
+          # инициализации Postgres и дальше живёт в томе с данными. Переписав
+          # его в .env, мы бы получили сервис, который не может войти в
+          # собственную базу, — а выглядит это как «деплой всё сломал».
+          #
+          # Поэтому: значение задано в APP_ENV — берём оттуда; нет — сохраняем
+          # прежнее с сервера; нечего сохранять (первая установка) — генерируем.
+          keep_or_make() {
+            name="$1"
+            if grep -qE "^${name}=.+" .env.incoming; then
+              echo "$name: задан в APP_ENV"
+              return 0
+            fi
+            old=""
+            if [ -f .env ]; then
+              old=$(grep -E "^${name}=" .env | head -1 || true)
+            fi
+            if [ -n "$old" ]; then
+              printf '%s\n' "$old" >> .env.incoming
+              echo "$name: сохранено прежнее значение с сервера"
+            else
+              printf '%s=%s\n' "$name" "$(openssl rand -hex 32)" >> .env.incoming
+              echo "$name: сгенерирован (первая установка)"
+            fi
+          }
+
+          keep_or_make DJANGO_SECRET_KEY
+          keep_or_make POSTGRES_PASSWORD
+
+          mv .env.incoming .env
+          chmod 600 .env
           echo ".env записан из секрета APP_ENV"
+          REMOTE
 
       - name: Сборка и запуск
         run: |

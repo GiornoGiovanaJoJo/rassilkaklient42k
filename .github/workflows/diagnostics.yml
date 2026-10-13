@@ -26,7 +26,9 @@ jobs:
           # отвечает проксирование хостинга, а не приложение: чинить тогда надо
           # привязку домена, а не сервис — снаружи эти случаи неотличимы.
           echo "--- кто ответил ---"
-          curl -sI --max-time 15 "$BASE/health" | head -5 || true
+          # -D- вместо -I: HEAD на этом маршруте не разрешён, и 405 в ответе
+          # сбивал бы с толку. Нужен не код, а строка Server.
+          curl -s -D- -o /dev/null --max-time 15 "$BASE/health" | head -5 || true
 
       - name: Установка sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
