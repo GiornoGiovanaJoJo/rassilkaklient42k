@@ -1,9 +1,20 @@
-"""Идемпотентное создание новых аддитивных таблиц приложения.
+"""Подготовка схемы базы к запуску.
 
-Вся остальная схема уже создана Django-миграциями и НЕ трогается: модели в
-:mod:`cbmail.db.models` описывают существующие таблицы. Полноценный Alembic для
-пары аддитивных таблиц избыточен и добавил бы риск разъехаться с боевой
-схемой; вместо него — точечный ``CREATE TABLE IF NOT EXISTS`` через SQLAlchemy.
+Два разных случая, и путать их нельзя.
+
+**Установка с нуля.** На новом сервере база пустая, а схемы приложение раньше
+не создавало вовсе: она досталась от Django-миграций прежней версии. Сервис
+стартовал и падал на первом же запросе — «relation does not exist». Поэтому,
+когда в базе нет ни одной знакомой таблицы, схема создаётся целиком из моделей:
+они и так описывают её полностью.
+
+**Существующая установка.** Схема уже есть, трогать её нельзя — создаются
+только аддитивные таблицы и точечно добавляются недостающие колонки, ровно как
+раньше. Полноценный Alembic здесь избыточен и добавил бы риск разъехаться с
+боевой схемой.
+
+Какой случай перед нами, определяет наличие таблицы профилей: она есть в любой
+рабочей установке с самой первой версии.
 
 Новые таблицы (обе с префиксом ``cbmail_``, чужие Django-таблицы не задеты):
 
@@ -17,9 +28,10 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
-from cbmail.db.models import MailProject, Session, Unsubscribe
+from cbmail.db.bootstrap_admin import ensure_first_admin
+from cbmail.db.models import Base, MailProject, Profile, Session, Unsubscribe
 from cbmail.db.session import get_sync_engine
 
 logger = logging.getLogger(__name__)
@@ -51,8 +63,27 @@ _SMTP_COLUMN_ALTERS = (
 )
 
 
+def _is_fresh_database(engine) -> bool:
+    """Пустая ли база — то есть ставимся ли мы с нуля.
+
+    Смотрим на таблицу профилей: без неё войти в систему нельзя, поэтому в
+    любой рабочей установке она есть. Её отсутствие означает чистый сервер, а
+    не повреждённую базу.
+    """
+    return not inspect(engine).has_table(Profile.__tablename__)
+
+
 def ensure_app_tables() -> None:
     engine = get_sync_engine()
+
+    if _is_fresh_database(engine):
+        # Установка с нуля: создаём всю схему из моделей и выходим — точечные
+        # ALTER ниже не нужны, свежие таблицы уже со всеми колонками.
+        logger.info("База пустая — создаём схему целиком")
+        Base.metadata.create_all(bind=engine)
+        logger.info("Схема создана: таблиц %s", len(Base.metadata.tables))
+        return
+
     for model in _NEW_TABLES:
         # checkfirst=True => CREATE выполняется, только если таблицы ещё нет.
         model.__table__.create(bind=engine, checkfirst=True)
@@ -79,4 +110,7 @@ def ensure_session_table() -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     ensure_app_tables()
+    # Первый администратор — только для чистой установки; на существующей
+    # функция сразу выходит, увидев, что пользователи уже есть.
+    ensure_first_admin()
     print("cbmail tables: ok")

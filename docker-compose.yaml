@@ -1,0 +1,115 @@
+# Самодостаточный стек: веб, воркер, база и Redis в одном месте.
+#
+# Прежний compose (docker-compose.cbmail.yaml) рассчитан на сервер, где уже
+# крутится старый стек: он подключался к чужой внешней сети и к готовым
+# контейнерам базы и Redis. На новом сервере ничего этого нет, поэтому здесь
+# всё своё — разворачивается с нуля одной командой.
+#
+# База и Redis наружу НЕ смотрят: порты не публикуются, доступ только изнутри
+# сети compose. Открытый в интернет Postgres находят переборщики за часы.
+
+name: rassilka
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: rassilka-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Инициализация с явной локалью: без неё сортировка и регистр в русских
+      # названиях списков зависят от образа.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # Ждём не «процесс запущен», а «база отвечает»: веб стартует раньше, чем
+      # Postgres заканчивает инициализацию при первом запуске.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: rassilka-redis
+    # appendonly: очередь задач не должна теряться при перезапуске сервера —
+    # иначе запланированная рассылка молча не уйдёт.
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: _config/cbmail/Dockerfile
+    image: rassilka:latest
+    container_name: rassilka-web
+    command: bash entrypoint-web.sh
+    env_file: [.env]
+    environment:
+      DJANGO_POSTGRES_HOST: db
+      DJANGO_POSTGRES_PORT: "5432"
+      DJANGO_REDIS_HOST: redis
+      DJANGO_REDIS_PORT: "6379"
+      LICENSE_FILE: /app/license.key
+      WEB_WORKERS: "${WEB_WORKERS:-2}"
+    volumes:
+      - media:/app/_media
+      - static:/app/_static
+      # Файл лицензии кладётся на сервер отдельно и в репозиторий не попадает.
+      # Монтируется на запись: ключ устанавливается через страницу /license, и
+      # установка дописывает в файл отметку об активации.
+      - ./license.key:/app/license.key
+      - /etc/machine-id:/etc/host-machine-id:ro
+    ports:
+      - "${APP_PORT:-8002}:8000"
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: _config/cbmail/Dockerfile
+    image: rassilka:latest
+    container_name: rassilka-worker
+    command: bash entrypoint-worker.sh
+    env_file: [.env]
+    environment:
+      DJANGO_POSTGRES_HOST: db
+      DJANGO_POSTGRES_PORT: "5432"
+      DJANGO_REDIS_HOST: redis
+      DJANGO_REDIS_PORT: "6379"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      LICENSE_FILE: /app/license.key
+    volumes:
+      - media:/app/_media
+      - static:/app/_static
+      # Монтируется на запись: ключ устанавливается через страницу /license, и
+      # установка дописывает в файл отметку об активации.
+      - ./license.key:/app/license.key
+      - /etc/machine-id:/etc/host-machine-id:ro
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      # Воркер поднимается после веба: схему базы создаёт entrypoint веба, и
+      # стартовать с пустой базой воркеру нечего.
+      web: { condition: service_started }
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  redis-data:
+  media:
+  static:

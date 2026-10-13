@@ -26,10 +26,13 @@ jobs:
           HOST: ${{ secrets.SSH_HOST }}
           PORT: ${{ secrets.SSH_PORT }}
           USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/rassilka' }}
         run: |
-          sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no "$USER@$HOST" bash -s <<'REMOTE'
+          sshpass -e ssh -p "${PORT:-22}"             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null             -o ConnectTimeout=120 "$USER@$HOST"             DEPLOY_PATH="${DEPLOY_PATH:-/opt/rassilka}" bash -s <<'REMOTE'
           set -e
-          PSQL="docker exec cb-mail-db psql -U admin -d db_admin"
+          cd "$DEPLOY_PATH"
+          set -a; . ./.env; set +a
+          PSQL="docker exec rassilka-db psql -U $POSTGRES_USER -d $POSTGRES_DB"
           echo "=== было ==="
           $PSQL -tAc "select coalesce(list,'(пусто)') from mail_stoplist"
           $PSQL -c "update mail_stoplist set list=''"

@@ -11,9 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Внешняя доступность (взгляд «снаружи», как у пользователя)
+        # Адрес берётся из секрета: репозиторий публичный, и зашивать в него
+        # адрес боевого сервера незачем.
+        env:
+          BASE: ${{ secrets.PUBLIC_BASE_URL }}
         run: |
-          echo "health:      $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 http://81.177.139.113:8002/health)"
-          echo "unsubscribe: $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 'http://81.177.139.113:8002/unsubscribe?e=notanemail')  (400 = страница доступна, адрес невалиден — это ок)"
+          if [ -z "$BASE" ]; then
+            echo "Секрет PUBLIC_BASE_URL не задан — внешнюю проверку пропускаем"
+            exit 0
+          fi
+          echo "health:      $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/health")"
+          echo "unsubscribe: $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/unsubscribe?e=notanemail")  (400 = страница доступна, адрес невалиден — это ок)"
 
       - name: Установка sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
@@ -24,14 +32,24 @@ jobs:
           HOST: ${{ secrets.SSH_HOST }}
           PORT: ${{ secrets.SSH_PORT }}
           USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/rassilka' }}
         run: |
-          sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no "$USER@$HOST" bash -s <<'REMOTE'
+          # ConnectTimeout большой: VPS Jino отвечает SSH-баннером с задержкой,
+          # и на стандартных 10 секундах соединение рвётся на исправном сервере.
+          sshpass -e ssh -p "${PORT:-22}" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=120 "$USER@$HOST" \
+            DEPLOY_PATH="${DEPLOY_PATH:-/opt/rassilka}" bash -s <<'REMOTE'
           set -e
-          PSQL="docker exec cb-mail-db psql -U admin -d db_admin -tAc"
+          # Доступ к базе берём из серверного .env: дублировать логин и пароль
+          # ещё и в секретах репозитория — лишнее место, где они разъедутся.
+          cd "$DEPLOY_PATH"
+          set -a; . ./.env; set +a
+          PSQL="docker exec rassilka-db psql -U $POSTGRES_USER -d $POSTGRES_DB -tAc"
           echo "=== combine_body в работающем образе (1 = новый код) ==="
-          docker exec cbmail-web sh -c "grep -c 'def combine_body' /app/cbmail/domain/composer.py" || true
+          docker exec rassilka-web sh -c "grep -c 'def combine_body' /app/cbmail/domain/composer.py" || true
           echo "=== PUBLIC_BASE_URL ==="
-          docker exec cbmail-web sh -c 'echo $PUBLIC_BASE_URL'
+          docker exec rassilka-web sh -c 'echo $PUBLIC_BASE_URL'
           echo "=== cbmail_unsubscribe (email | scope) ==="
           $PSQL "select email || '  |  ' || coalesce(scope,'(пусто=глобально)') from cbmail_unsubscribe order by id" || echo "таблицы нет/пусто"
           echo "=== mail_stoplist (общий ручной блок) ==="

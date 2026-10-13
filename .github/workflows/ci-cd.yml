@@ -1,7 +1,8 @@
 name: CI/CD
 
-# Тесты гоняются на каждый push и PR. Деплой на прод — только при push в main
-# (или вручную через «Run workflow») и лишь после зелёных тестов.
+# Тесты гоняются на каждый push и PR. Деплой — только из main (или вручную) и
+# лишь после зелёных тестов: выкатывать непроверенный код на сервер, с которого
+# уходят письма живым получателям, нельзя.
 
 on:
   push:
@@ -35,60 +36,158 @@ jobs:
         working-directory: app
         run: pytest -q
 
+  # Отдельный шаг-страж: секрет нельзя прочитать в условии job напрямую, а
+  # запускать деплой «в никуда» нельзя — он упадёт на первом же ssh и покажет
+  # красный крест там, где всё в порядке, просто сервер ещё не подключён.
+  check-secrets:
+    name: Данные сервера заданы?
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.probe.outputs.ready }}
+    steps:
+      - id: probe
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+          USER: ${{ secrets.SSH_USER }}
+          PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          if [ -n "$HOST" ] && [ -n "$USER" ] && [ -n "$PASSWORD" ]; then
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+            echo "Данные сервера заданы — деплой выполнится."
+          else
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+            echo "Секреты SSH_HOST / SSH_USER / SSH_PASSWORD не заданы."
+            echo "Деплой пропускаем: код проверен, выкатывать пока некуда."
+            echo "Задать: Settings → Secrets and variables → Actions."
+          fi
+
   deploy:
-    name: Деплой на прод
-    needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    name: Деплой на сервер
+    needs: [test, check-secrets]
+    if: |
+      github.ref == 'refs/heads/main'
+      && github.event_name != 'pull_request'
+      && needs.check-secrets.outputs.ready == 'yes'
     runs-on: ubuntu-latest
     concurrency:
-      # Два деплоя одновременно недопустимы — второй ждёт или отменяется.
+      # Два деплоя разом недопустимы: второй перезапишет код под работающей
+      # сборкой первого.
       group: production-deploy
       cancel-in-progress: false
+
+    env:
+      SSHPASS: ${{ secrets.SSH_PASSWORD }}
+      HOST: ${{ secrets.SSH_HOST }}
+      PORT: ${{ secrets.SSH_PORT || '22' }}
+      USER: ${{ secrets.SSH_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/rassilka' }}
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Установка sshpass
-        run: sudo apt-get update && sudo apt-get install -y sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
 
-      - name: Копирование кода на сервер
-        env:
-          SSHPASS: ${{ secrets.SSH_PASSWORD }}
-          HOST: ${{ secrets.SSH_HOST }}
-          PORT: ${{ secrets.SSH_PORT }}
-          USER: ${{ secrets.SSH_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/emails-code' }}
+      - name: Проверка доступа к серверу
         run: |
-          # tar-over-ssh: не зависит от rsync на сервере (там его нет), а tar есть
-          # везде. Без удаления лишнего — серверные .env, license.key,
-          # src/_static, src/_media не затрагиваются (их нет в архиве).
+          # Отдельным шагом и первым: если сервер недоступен, человек должен
+          # увидеть это сразу, а не угадывать среди сотни строк сборки.
+          #
+          # ConnectTimeout большой намеренно: VPS Jino отвечает SSH-баннером с
+          # задержкой, и на стандартных 10 секундах соединение рвалось с
+          # «Connection timed out during banner exchange» — сервер при этом был
+          # полностью исправен.
+          sshpass -e ssh -p "$PORT" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=120 -o ServerAliveInterval=30 \
+            "$USER@$HOST" 'echo "сервер отвечает: $(hostname)"'
+
+      - name: Проверка готовности сервера
+        run: |
+          sshpass -e ssh -p "$PORT" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=120 -o ServerAliveInterval=30 \
+            "$USER@$HOST" bash -s <<'REMOTE'
+          set -e
+          missing=""
+          command -v docker >/dev/null 2>&1 || missing="$missing docker"
+          docker compose version >/dev/null 2>&1 || missing="$missing docker-compose-plugin"
+          command -v tar >/dev/null 2>&1 || missing="$missing tar"
+          if [ -n "$missing" ]; then
+            echo "На сервере не хватает:$missing"
+            echo "Установить:  curl -fsSL https://get.docker.com | sh"
+            exit 1
+          fi
+          echo "docker: $(docker --version)"
+          echo "compose: $(docker compose version --short)"
+          REMOTE
+
+      - name: Копирование кода
+        run: |
+          # tar-over-ssh вместо rsync: rsync на сервере может не стоять, tar
+          # есть везде. Без --delete: серверные .env и license.key в архив не
+          # попадают и не должны пострадать.
           tar czf - \
             --exclude='__pycache__' --exclude='*.pyc' --exclude='*.egg-info' \
             --exclude='.venv' --exclude='*.sqlite3' --exclude='license.key' \
-            app _config docker-compose.cbmail.yaml \
-          | sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no "$USER@$HOST" \
-              "mkdir -p '$DEPLOY_PATH' && tar xzf - -C '$DEPLOY_PATH'"
+            --exclude='.git' --exclude='.github' \
+            app _config docker-compose.yaml .env.example \
+          | sshpass -e ssh -p "$PORT" \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=120 -o ServerAliveInterval=30 \
+              "$USER@$HOST" "mkdir -p '$DEPLOY_PATH' && tar xzf - -C '$DEPLOY_PATH'"
 
-      - name: Пересборка образа и запуск (web + worker, порт 8002)
-        env:
-          SSHPASS: ${{ secrets.SSH_PASSWORD }}
-          HOST: ${{ secrets.SSH_HOST }}
-          PORT: ${{ secrets.SSH_PORT }}
-          USER: ${{ secrets.SSH_USER }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/emails-code' }}
+      - name: Сборка и запуск
         run: |
-          sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no "$USER@$HOST" bash -s <<'REMOTE'
+          sshpass -e ssh -p "$PORT" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=120 -o ServerAliveInterval=30 \
+            "$USER@$HOST" DEPLOY_PATH="$DEPLOY_PATH" bash -s <<'REMOTE'
           set -e
-          cd "${DEPLOY_PATH:-/opt/emails-code}"
-          COMPOSE="docker compose -f docker-compose.cbmail.yaml"
-          export CBMAIL_PORT=8002
-          $COMPOSE build cbmail-web
-          $COMPOSE up -d --force-recreate cbmail-web
-          $COMPOSE --profile worker up -d --force-recreate cbmail-worker
-          echo "Ожидание health..."
-          for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8002/health || echo 000)
-            if [ "$code" = "200" ]; then echo "health 200 (за $i)"; exit 0; fi
+          cd "$DEPLOY_PATH"
+
+          if [ ! -f .env ]; then
+            echo "Нет файла .env — сервис не настроен."
+            echo "Выполните на сервере:"
+            echo "  cd $DEPLOY_PATH && cp .env.example .env && nano .env"
+            exit 1
+          fi
+
+          # Лицензия монтируется файлом. Если файла нет, docker создаст на его
+          # месте КАТАЛОГ, и контейнер молча стартует с нерабочей лицензией —
+          # поэтому пустой файл заводим заранее и говорим об этом вслух.
+          if [ ! -f license.key ]; then
+            : > license.key
+            echo "ВНИМАНИЕ: license.key пуст — положите действующий файл лицензии в $DEPLOY_PATH"
+          fi
+
+          docker compose build web
+          docker compose up -d --force-recreate web worker
+
+          PORT_APP=$(grep -E '^APP_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')
+          PORT_APP=${PORT_APP:-8002}
+          echo "Ожидание health на порту $PORT_APP..."
+          for i in $(seq 1 45); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_APP/health" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "health 200 (попытка $i)"
+              docker compose ps
+
+              # Health отвечает и без лицензии, но без неё сервис закрыт весь,
+              # кроме страницы активации. Молчать об этом нельзя: деплой
+              # «успешен», а войти нельзя — выглядит как поломка.
+              echo ""
+              # Состояние лицензии отдельным файлом: внутри двух вложенных
+              # heredoc любая кавычка в однострочнике превращается в
+              # нерабочую команду, и замечаешь это уже на сервере.
+              docker cp _config/license-status.py rassilka-web:/tmp/license-status.py
+              docker exec rassilka-web python /tmp/license-status.py || true
+              exit 0
+            fi
             sleep 2
           done
-          echo "health не поднялся до 200"; docker logs cbmail-web --tail 30; exit 1
+
+          echo "Сервис не ответил на /health. Журнал:"
+          docker compose logs --tail 60 web
+          exit 1
           REMOTE
