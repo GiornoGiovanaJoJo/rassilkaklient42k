@@ -16,6 +16,15 @@ COPY app/pyproject.toml /app/pyproject.toml
 COPY app/cbmail /app/cbmail
 RUN pip install .
 
+# Оформление интерфейса. Раньше его в образе не было вовсе: на старом сервере
+# каталог со статикой остался от Django-версии и подключался томом. На новом
+# сервере том пустой — страницы отдавались голой разметкой без единого стиля, и
+# выглядело это как сломанный сервис, хотя приложение работало.
+#
+# Поэтому статика едет внутри образа: она меняется вместе с кодом и обязана
+# обновляться вместе с ним, а не жить отдельной жизнью в томе.
+COPY _static /app/_static
+
 COPY _config/cbmail/entrypoint-web.sh /app/entrypoint-web.sh
 COPY _config/cbmail/entrypoint-worker.sh /app/entrypoint-worker.sh
 RUN chmod +x /app/entrypoint-web.sh /app/entrypoint-worker.sh

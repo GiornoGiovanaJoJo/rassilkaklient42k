@@ -151,7 +151,7 @@ jobs:
             --exclude='__pycache__' --exclude='*.pyc' --exclude='*.egg-info' \
             --exclude='.venv' --exclude='*.sqlite3' --exclude='license.key' \
             --exclude='.git' --exclude='.github' \
-            app _config docker-compose.yaml .env.example \
+            app _config _static docker-compose.yaml .env.example \
           | sshpass -e ssh -p "$PORT" \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o ConnectTimeout=120 -o ServerAliveInterval=30 \
