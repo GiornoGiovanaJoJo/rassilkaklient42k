@@ -64,6 +64,10 @@ jobs:
           docker exec rassilka-web sh -c "grep -c 'def combine_body' /app/cbmail/domain/composer.py" || true
           echo "=== PUBLIC_BASE_URL ==="
           docker exec rassilka-web sh -c 'echo $PUBLIC_BASE_URL'
+          echo "=== кто может войти ==="
+          # Пустой список означает, что в систему не войти вообще: пользователей
+          # заводит только существующий администратор, и первого взять неоткуда.
+          $PSQL "select username || '  | админ=' || is_superuser || '  | активен=' || is_active from useraccount_profile order by date_joined" || echo "нет пользователей"
           echo "=== cbmail_unsubscribe (email | scope) ==="
           $PSQL "select email || '  |  ' || coalesce(scope,'(пусто=глобально)') from cbmail_unsubscribe order by id" || echo "таблицы нет/пусто"
           echo "=== mail_stoplist (общий ручной блок) ==="
