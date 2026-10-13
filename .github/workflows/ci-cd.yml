@@ -102,20 +102,40 @@ jobs:
             -o ConnectTimeout=120 -o ServerAliveInterval=30 \
             "$USER@$HOST" 'echo "сервер отвечает: $(hostname)"'
 
-      - name: Проверка готовности сервера
+      - name: Подготовка сервера
+        # На свежей VPS Docker не стоит. Ставим сами, а не падаем с инструкцией:
+        # иначе первая выкатка на новый сервер всегда красная, и человеку нужно
+        # идти в консоль ровно за одной командой, которую можно выполнить здесь.
+        # Повторные выкатки этот шаг проходят насквозь — Docker уже на месте.
         run: |
           sshpass -e ssh -p "$PORT" \
             -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=120 -o ServerAliveInterval=30 \
             "$USER@$HOST" bash -s <<'REMOTE'
           set -e
+          SUDO=""
+          [ "$(id -u)" -eq 0 ] || SUDO="sudo"
+          export DEBIAN_FRONTEND=noninteractive
+
+          if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
+            echo "Docker на сервере нет — устанавливаем (это занимает пару минут)."
+            command -v curl >/dev/null 2>&1 || {
+              $SUDO apt-get update -qq
+              $SUDO apt-get install -y -qq curl
+            }
+            curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+            $SUDO sh /tmp/get-docker.sh
+            rm -f /tmp/get-docker.sh
+          fi
+
+          command -v tar >/dev/null 2>&1 || $SUDO apt-get install -y -qq tar
+
           missing=""
           command -v docker >/dev/null 2>&1 || missing="$missing docker"
           docker compose version >/dev/null 2>&1 || missing="$missing docker-compose-plugin"
           command -v tar >/dev/null 2>&1 || missing="$missing tar"
           if [ -n "$missing" ]; then
-            echo "На сервере не хватает:$missing"
-            echo "Установить:  curl -fsSL https://get.docker.com | sh"
+            echo "Установка не удалась, на сервере по-прежнему нет:$missing"
             exit 1
           fi
           echo "docker: $(docker --version)"
