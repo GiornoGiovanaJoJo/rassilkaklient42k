@@ -22,6 +22,11 @@ jobs:
           fi
           echo "health:      $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/health")"
           echo "unsubscribe: $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$BASE/unsubscribe?e=notanemail")  (400 = страница доступна, адрес невалиден — это ок)"
+          # Заголовки показывают, КТО ответил. Чужой Server на 404 означает, что
+          # отвечает проксирование хостинга, а не приложение: чинить тогда надо
+          # привязку домена, а не сервис — снаружи эти случаи неотличимы.
+          echo "--- кто ответил ---"
+          curl -sI --max-time 15 "$BASE/health" | head -5 || true
 
       - name: Установка sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
