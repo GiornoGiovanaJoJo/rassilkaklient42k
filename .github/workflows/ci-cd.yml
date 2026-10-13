@@ -137,6 +137,28 @@ jobs:
               -o ConnectTimeout=120 -o ServerAliveInterval=30 \
               "$USER@$HOST" "mkdir -p '$DEPLOY_PATH' && tar xzf - -C '$DEPLOY_PATH'"
 
+      - name: Настройка окружения
+        env:
+          APP_ENV: ${{ secrets.APP_ENV }}
+        run: |
+          # .env собирается из секрета APP_ENV, а не правится руками на сервере:
+          # иначе настройки живут в одном экземпляре на диске VPS, и после
+          # переустановки сервера их неоткуда взять.
+          #
+          # Пишется ПОСЛЕ копирования кода и ПЕРЕД запуском: архив .env не
+          # содержит, а compose читает его на старте.
+          if [ -z "$APP_ENV" ]; then
+            echo "Секрет APP_ENV не задан — оставляем .env, который уже лежит на сервере."
+            exit 0
+          fi
+          # Через stdin, а не аргументом команды: аргументы видны в списке
+          # процессов на сервере любому пользователю, а здесь пароли.
+          printf '%s\n' "$APP_ENV" | sshpass -e ssh -p "$PORT" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=120 -o ServerAliveInterval=30 \
+            "$USER@$HOST" "mkdir -p '$DEPLOY_PATH' && cat > '$DEPLOY_PATH/.env' && chmod 600 '$DEPLOY_PATH/.env'"
+          echo ".env записан из секрета APP_ENV"
+
       - name: Сборка и запуск
         run: |
           sshpass -e ssh -p "$PORT" \
@@ -148,17 +170,10 @@ jobs:
 
           if [ ! -f .env ]; then
             echo "Нет файла .env — сервис не настроен."
-            echo "Выполните на сервере:"
+            echo "Задайте секрет APP_ENV в GitHub (его содержимое и станет .env)"
+            echo "или создайте файл на сервере:"
             echo "  cd $DEPLOY_PATH && cp .env.example .env && nano .env"
             exit 1
-          fi
-
-          # Лицензия монтируется файлом. Если файла нет, docker создаст на его
-          # месте КАТАЛОГ, и контейнер молча стартует с нерабочей лицензией —
-          # поэтому пустой файл заводим заранее и говорим об этом вслух.
-          if [ ! -f license.key ]; then
-            : > license.key
-            echo "ВНИМАНИЕ: license.key пуст — положите действующий файл лицензии в $DEPLOY_PATH"
           fi
 
           docker compose build web
@@ -182,6 +197,13 @@ jobs:
               # нерабочую команду, и замечаешь это уже на сервере.
               docker cp _config/license-status.py rassilka-web:/tmp/license-status.py
               docker exec rassilka-web python /tmp/license-status.py || true
+
+              # «Профиль создан» и «через него можно отправить» — разные вещи.
+              # Проверяем авторизацию на почтовом сервере, иначе первая же
+              # рассылка не уйдёт, а деплой будет считаться успешным.
+              echo ""
+              docker cp _config/smtp-status.py rassilka-web:/tmp/smtp-status.py
+              docker exec rassilka-web python /tmp/smtp-status.py || true
               exit 0
             fi
             sleep 2

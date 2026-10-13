@@ -65,10 +65,10 @@ services:
     volumes:
       - media:/app/_media
       - static:/app/_static
-      # Файл лицензии кладётся на сервер отдельно и в репозиторий не попадает.
-      # Монтируется на запись: ключ устанавливается через страницу /license, и
-      # установка дописывает в файл отметку об активации.
-      - ./license.key:/app/license.key
+      # Отпечаток хоста для лицензии. Проверка здесь выключена
+      # (LICENSE_REQUIRED не задана), монтирование оставлено на случай, если её
+      # включат обратно: без него ключ привязался бы к id контейнера, который
+      # меняется при каждом пересоздании.
       - /etc/machine-id:/etc/host-machine-id:ro
     ports:
       - "${APP_PORT:-8002}:8000"
@@ -96,9 +96,6 @@ services:
     volumes:
       - media:/app/_media
       - static:/app/_static
-      # Монтируется на запись: ключ устанавливается через страницу /license, и
-      # установка дописывает в файл отметку об активации.
-      - ./license.key:/app/license.key
       - /etc/machine-id:/etc/host-machine-id:ro
     depends_on:
       db: { condition: service_healthy }

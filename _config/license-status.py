@@ -23,6 +23,9 @@ def main() -> int:
         return 0
 
     status = license_status()
+    if not status.get("enforced", True):
+        print("Лицензия: проверка отключена — сервис работает без ключа.")
+        return 0
     if status["ok"]:
         print("Лицензия: действительна")
         return 0

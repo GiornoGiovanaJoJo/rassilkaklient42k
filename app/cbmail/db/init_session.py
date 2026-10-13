@@ -31,6 +31,7 @@ import logging
 from sqlalchemy import inspect, text
 
 from cbmail.db.bootstrap_admin import ensure_first_admin
+from cbmail.db.bootstrap_smtp import ensure_smtp_profiles
 from cbmail.db.models import Base, MailProject, Profile, Session, Unsubscribe
 from cbmail.db.session import get_sync_engine
 
@@ -113,4 +114,7 @@ if __name__ == "__main__":
     # Первый администратор — только для чистой установки; на существующей
     # функция сразу выходит, увидев, что пользователи уже есть.
     ensure_first_admin()
+    # Почтовые ящики из окружения. Строго после администратора: профиль
+    # принадлежит пользователю, и заводить его не на кого, пока того нет.
+    ensure_smtp_profiles()
     print("cbmail tables: ok")

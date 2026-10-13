@@ -38,6 +38,25 @@ _HOST_SALT = "cbmail-license::v1"
 
 _DEFAULT_LICENSE_FILENAME = "license.key"
 
+# --- Включена ли проверка ---------------------------------------------------
+#
+# В этой сборке лицензирование по умолчанию ВЫКЛЮЧЕНО: сервис разворачивается на
+# собственном сервере и запирать его ключом, привязанным к машине, здесь незачем.
+# Привязка живёт на machine-id: переустановка сервера, перенос на другую VPS и
+# даже смена тарифа меняют отпечаток, и сервис встал бы до выпуска нового ключа.
+#
+# Код проверки оставлен целиком и включается переменной ``LICENSE_REQUIRED=1``.
+# Вырезать рабочую защиту ради «сейчас не нужна» — значит писать её заново, когда
+# понадобится; выключатель обходится одной строкой.
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "да"})
+
+LICENSE_REQUIRED_ENV = "LICENSE_REQUIRED"
+
+
+def license_enforced() -> bool:
+    """Проверять ли ключ. По умолчанию — нет (см. комментарий выше)."""
+    return (os.environ.get(LICENSE_REQUIRED_ENV) or "").strip().lower() in _TRUE_VALUES
+
 # Кэшируем результат проверки, чтобы per-request middleware было дешёвым.
 _cache: dict[str, object] = {"ok": None, "reason": "", "ts": 0.0}
 _CACHE_TTL = 300.0
@@ -93,7 +112,16 @@ def _canonical(payload: dict) -> bytes:
 
 
 def verify_license(force: bool = False) -> tuple[bool, str]:
-    """Вернуть (ok, reason). Fail-closed при любой ошибке."""
+    """Вернуть (ok, reason). Fail-closed при любой ошибке.
+
+    Если лицензирование выключено — сразу «годен», не читая файл: иначе на
+    сервере без ключа каждый запрос упирался бы в отсутствующий license.key.
+    Проверяется на каждом вызове, а не один раз при импорте, чтобы включение
+    переменной подхватывалось перезапуском контейнера без пересборки образа.
+    """
+    if not license_enforced():
+        return True, "лицензирование отключено"
+
     now = time.time()
     if not force and _cache["ok"] is not None and (now - float(_cache["ts"])) < _CACHE_TTL:
         return bool(_cache["ok"]), str(_cache["reason"])
@@ -240,5 +268,12 @@ def install_license(text: str) -> tuple[bool, str]:
 
 def license_status() -> dict:
     """Сводка для страницы активации и диагностики."""
+    if not license_enforced():
+        return {
+            "ok": True,
+            "reason": "лицензирование отключено",
+            "host_id": compute_host_id(),
+            "enforced": False,
+        }
     ok, reason = verify_license(force=True)
-    return {"ok": ok, "reason": reason, "host_id": compute_host_id()}
+    return {"ok": ok, "reason": reason, "host_id": compute_host_id(), "enforced": True}
