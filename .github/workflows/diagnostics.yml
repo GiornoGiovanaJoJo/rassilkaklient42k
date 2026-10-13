@@ -51,7 +51,14 @@ jobs:
           # Доступ к базе берём из серверного .env: дублировать логин и пароль
           # ещё и в секретах репозитория — лишнее место, где они разъедутся.
           cd "$DEPLOY_PATH"
-          set -a; . ./.env; set +a
+          # Из .env берём ровно два значения построчно, а не подключаем его
+          # целиком через `.`: это файл настроек, а не скрипт. Любое значение с
+          # пробелом bash принимает за команду («Logistic: command not found»),
+          # а значение с обратными кавычками он ВЫПОЛНИТ — пароль из .env
+          # превращается в команду на сервере.
+          envval() { grep -E "^$1=" .env | head -1 | cut -d= -f2-; }
+          POSTGRES_USER=$(envval POSTGRES_USER)
+          POSTGRES_DB=$(envval POSTGRES_DB)
           PSQL="docker exec rassilka-db psql -U $POSTGRES_USER -d $POSTGRES_DB -tAc"
           echo "=== combine_body в работающем образе (1 = новый код) ==="
           docker exec rassilka-web sh -c "grep -c 'def combine_body' /app/cbmail/domain/composer.py" || true
