@@ -32,7 +32,14 @@ from sqlalchemy import inspect, text
 
 from cbmail.db.bootstrap_admin import ensure_first_admin
 from cbmail.db.bootstrap_smtp import ensure_smtp_profiles
-from cbmail.db.models import Base, MailProject, Profile, Session, Unsubscribe
+from cbmail.db.models import (
+    Base,
+    CampaignSmtp,
+    MailProject,
+    Profile,
+    Session,
+    Unsubscribe,
+)
 from cbmail.db.session import get_sync_engine
 
 logger = logging.getLogger(__name__)
@@ -41,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ``mail_mailproject`` — новая таблица «проектов рассылки»; имя следует
 # Django-конвенции, поэтому старая копия (Django-миграция) и новая (этот
 # CREATE IF NOT EXISTS) сходятся к одной и той же схеме.
-_NEW_TABLES = (Session, Unsubscribe, MailProject)
+_NEW_TABLES = (Session, Unsubscribe, MailProject, CampaignSmtp)
 
 # Колонки, добавляемые к СУЩЕСТВУЮЩЕЙ таблице SMTP-профилей. create() их не
 # трогает (таблица уже есть), поэтому добавляем точечным идемпотентным ALTER.
@@ -53,6 +60,11 @@ _NEW_TABLES = (Session, Unsubscribe, MailProject)
 _LOG_COLUMN_ALTERS = (
     'ALTER TABLE mail_massmaillog ADD COLUMN IF NOT EXISTS opened_at timestamptz',
     'ALTER TABLE mail_massmaillog ADD COLUMN IF NOT EXISTS clicked_at timestamptz',
+    # Каким ящиком отправлено письмо. Нужно для суточного лимита: он на ящик, а
+    # рассылка идёт с нескольких сразу, и по кампании чужую квоту не отличить.
+    'ALTER TABLE mail_massmaillog ADD COLUMN IF NOT EXISTS smtp_id bigint',
+    'CREATE INDEX IF NOT EXISTS mail_massmaillog_smtp_created_idx '
+    'ON mail_massmaillog (smtp_id, created_at)',
     'CREATE INDEX IF NOT EXISTS mail_massmaillog_campaign_email_idx '
     'ON mail_massmaillog (campaign_id, email)',
 )
