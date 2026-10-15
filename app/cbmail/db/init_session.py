@@ -70,6 +70,9 @@ _LOG_COLUMN_ALTERS = (
 )
 
 _SMTP_COLUMN_ALTERS = (
+    # Отпечаток пароля из окружения: по нему видно, правил ли пароль человек
+    # (см. SmtpProfile.env_password_hash).
+    'ALTER TABLE mail_usersettingssmtp ADD COLUMN IF NOT EXISTS env_password_hash varchar(64)',
     'ALTER TABLE mail_usersettingssmtp ADD COLUMN IF NOT EXISTS daily_limit integer NOT NULL DEFAULT 0',
     'ALTER TABLE mail_usersettingssmtp ADD COLUMN IF NOT EXISTS project_id bigint '
     'REFERENCES mail_mailproject(id) ON DELETE SET NULL',

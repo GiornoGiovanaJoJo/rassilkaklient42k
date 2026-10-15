@@ -24,13 +24,23 @@ JSON в ``.env`` ломается тихо: кавычки внутри знач
 пароле, перенос строки — и профиль не создаётся без внятной причины. Плоские
 переменные читаются глазами и правятся без оглядки на экранирование.
 
-Существующий профиль НЕ перезаписывается: пароль, поправленный в интерфейсе,
-иначе откатывался бы к значению из ``.env`` при каждом перезапуске. Признак
-совпадения — пара «владелец + логин ящика».
+Существующий профиль ищется по паре «владелец + логин ящика».
+
+Пароль у него обновляется, **пока его не трогали руками**. Простое правило
+«никогда не перезаписывать» выглядело безопаснее, но делало неверный пароль
+неисправимым оттуда, где вообще живут настройки: поправить ``.env`` и выкатить
+— ничего не менялось. Простое правило «всегда перезаписывать» откатывало бы
+пароль, исправленный в интерфейсе, при каждой выкатке.
+
+Поэтому запоминается отпечаток того пароля, который записало окружение
+(``env_password_hash``). Совпадает с текущим — значит профилем по-прежнему
+управляет ``.env``, и новое значение можно применить. Не совпадает — пароль
+меняли в интерфейсе, и выкатка его не трогает.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 
@@ -47,6 +57,12 @@ PREFIX = "CBMAIL_SMTP"
 # Больше двадцати ящиков на одной установке не встречалось; ограничение нужно,
 # чтобы не перебирать окружение бесконечно.
 MAX_PROFILES = 20
+
+
+def _fingerprint(password: str) -> str:
+    """Отпечаток пароля — чтобы отличить «поменяли руками» от «как было»."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
 
 DEFAULT_SSL_PORT = 465
 DEFAULT_TLS_PORT = 587
@@ -129,8 +145,47 @@ def _project_id(session: OrmSession, owner: Profile, name: str) -> int | None:
     return project.id
 
 
+def _sync_existing(
+    profile: SmtpProfile, item: dict[str, str], fingerprint: str | None
+) -> None:
+    """Обновить пароль у заведённого профиля, если им по-прежнему ведает .env.
+
+    Признак — отпечаток: он совпадает с текущим паролем, значит после записи из
+    окружения пароль никто не менял. Расхождение означает правку в интерфейсе,
+    и выкатка её не отменяет.
+
+    Пустой отпечаток у старой записи считаем «ведёт окружение»: до появления
+    этой отметки профили заводились здесь же, и других владельцев у них не
+    было. Созданный руками профиль с тем же логином один раз получит пароль из
+    окружения — дальше отметка расставится и он будет учитываться как все.
+    """
+    if not item["password"]:
+        return
+    if profile.email_host_password == item["password"]:
+        # Пароль уже тот самый — ставим отметку, если её ещё нет, и выходим.
+        if profile.env_password_hash != fingerprint:
+            profile.env_password_hash = fingerprint
+        return
+
+    managed_by_env = (
+        profile.env_password_hash is None
+        or profile.env_password_hash == _fingerprint(profile.email_host_password or "")
+    )
+    if not managed_by_env:
+        logger.info(
+            "Почтовый профиль %s: пароль меняли в интерфейсе — значение из окружения не применяем",
+            item["user"],
+        )
+        return
+
+    profile.email_host_password = item["password"]
+    profile.env_password_hash = fingerprint
+    # Пароль в журнал не пишем ни при каких условиях.
+    logger.info("Почтовый профиль %s: пароль обновлён из окружения", item["user"])
+
+
 def ensure_smtp_profiles() -> None:
-    """Завести описанные в окружении ящики, не трогая уже существующие."""
+    """Завести описанные в окружении ящики и обновить те, что ведёт окружение."""
     described = [item for item in (_describe(i) for i in range(1, MAX_PROFILES + 1)) if item]
     if not described:
         return
@@ -157,17 +212,20 @@ def ensure_smtp_profiles() -> None:
                 )
                 continue
 
-            exists = session.execute(
-                select(SmtpProfile.id).where(
+            use_tls, use_ssl, port = resolve_security(item["security"], item["port"])
+            fingerprint = _fingerprint(item["password"]) if item["password"] else None
+
+            existing = session.execute(
+                select(SmtpProfile).where(
                     SmtpProfile.user_id == owner.id,
                     SmtpProfile.email_host_user == item["user"],
                 )
-            ).first()
-            if exists is not None:
-                logger.info("Почтовый профиль %s уже заведён — не трогаем", item["user"])
+            ).scalar_one_or_none()
+
+            if existing is not None:
+                _sync_existing(existing, item, fingerprint)
                 continue
 
-            use_tls, use_ssl, port = resolve_security(item["security"], item["port"])
             session.add(
                 SmtpProfile(
                     title=item["title"] or item["user"],
@@ -175,6 +233,7 @@ def ensure_smtp_profiles() -> None:
                     email_port=port,
                     email_host_user=item["user"],
                     email_host_password=item["password"],
+                    env_password_hash=fingerprint,
                     default_from_email=item["from"] or item["user"],
                     email_use_tls=use_tls,
                     email_use_ssl=use_ssl,
@@ -186,5 +245,4 @@ def ensure_smtp_profiles() -> None:
             # Адрес ящика — не секрет, пароль в журнал не пишем.
             logger.info("Заведён почтовый профиль: %s (%s:%s)", item["user"], item["host"], port)
 
-        if created:
-            session.commit()
+        session.commit()

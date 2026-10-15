@@ -241,6 +241,16 @@ class SmtpProfile(Base):
     check_count: Mapped[int] = mapped_column(Integer, default=0)
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    #: Отпечаток пароля, который сюда записало окружение (CBMAIL_SMTP_*).
+    #:
+    #: По нему видно, правил ли пароль человек. Совпадает с текущим — значит
+    #: профилем по-прежнему управляет .env, и новое значение оттуда можно
+    #: применить. Не совпадает — пароль поменяли в интерфейсе, и переписывать
+    #: его выкаткой нельзя.
+    #:
+    #: Хранится хеш, а не пароль: пароль в этой таблице и так лежит открытым,
+    #: но заводить ему вторую копию незачем.
+    env_password_hash: Mapped[str | None] = mapped_column(String(64))
 
     user: Mapped[Profile] = relationship(back_populates="smtp_profiles")
     project: Mapped[MailProject | None] = relationship(lazy="joined")
