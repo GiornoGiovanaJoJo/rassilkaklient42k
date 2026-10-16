@@ -90,6 +90,9 @@ services:
       redis: { condition: service_healthy }
     restart: unless-stopped
 
+  # Рассылки. Отправка занимает процесс на часы, поэтому обслуживание живёт
+  # отдельным контейнером (scheduler) — иначе занятые рассылки останавливают
+  # расписание целиком, и сервис выглядит сломанным.
   worker:
     build:
       context: .
@@ -106,6 +109,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       LICENSE_FILE: /app/license.key
+      WORKER_ROLE: campaigns
     volumes:
       - media:/app/_media
       - /etc/machine-id:/etc/host-machine-id:ro
@@ -114,6 +118,37 @@ services:
       redis: { condition: service_healthy }
       # Воркер поднимается после веба: схему базы создаёт entrypoint веба, и
       # стартовать с пустой базой воркеру нечего.
+      web: { condition: service_started }
+    # Рассылка не обрывается по SIGTERM мгновенно: даём закрыть SMTP-соединение
+    # и дописать журнал. Недописанную кампанию подберёт сборщик зависших, но
+    # лишний раз этого лучше не допускать.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # Расписание и сбор зависших кампаний. Один процесс, собственный beat.
+  scheduler:
+    build:
+      context: .
+      dockerfile: _config/cbmail/Dockerfile
+    image: rassilka:latest
+    container_name: rassilka-scheduler
+    command: bash entrypoint-worker.sh
+    env_file: [.env]
+    environment:
+      DJANGO_POSTGRES_HOST: db
+      DJANGO_POSTGRES_PORT: "5432"
+      DJANGO_REDIS_HOST: redis
+      DJANGO_REDIS_PORT: "6379"
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      LICENSE_FILE: /app/license.key
+      WORKER_ROLE: maintenance
+    volumes:
+      - media:/app/_media
+      - /etc/machine-id:/etc/host-machine-id:ro
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
       web: { condition: service_started }
     restart: unless-stopped
 

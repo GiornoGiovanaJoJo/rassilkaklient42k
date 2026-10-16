@@ -76,4 +76,17 @@ jobs:
           $PSQL "select id || '  |  ' || coalesce(title,'') || '  | host=' || coalesce(email_host,'') || '  | login=' || coalesce(email_host_user,'') || '  | from=' || coalesce(default_from_email,'') from mail_usersettingssmtp order by id" || echo "нет профилей"
           echo "=== кампании (id | статус | from_email | smtp_id) ==="
           $PSQL "select id || '  |  ' || status || '  |  from=' || coalesce(from_email,'') || '  |  smtp=' || coalesce(use_smtp_settings_id::text,'-') from mail_massmailcampaign order by id desc limit 10" || echo "нет кампаний"
+          echo ""
+          echo "=== почему рассылки не уходят ==="
+          # Статус, причина переноса, занятость воркера и остаток суточной
+          # квоты ящика — рядом. Поодиночке все четыре состояния выглядят как
+          # «кампания висит», и разбирались они раньше вручную по четырём местам.
+          # Через docker cp, а не из образа: _config на сервер кладёт деплой,
+          # внутрь образа он не попадает.
+          docker cp _config/campaigns-status.py rassilka-web:/tmp/campaigns-status.py
+          docker exec rassilka-web python /tmp/campaigns-status.py || true
+          echo ""
+          echo "=== планировщик (без него расписание не работает) ==="
+          docker inspect -f 'rassilka-scheduler запущен={{.State.Running}}' rassilka-scheduler \
+            || echo "контейнера rassilka-scheduler нет — запланированные кампании уходить не будут"
           REMOTE

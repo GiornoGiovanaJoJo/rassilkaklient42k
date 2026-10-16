@@ -239,7 +239,13 @@ jobs:
           fi
 
           docker compose build web
-          docker compose up -d --force-recreate web worker
+          # --force-recreate только там, где он нужен. Воркер рассылок им
+          # убивало посреди отправки на каждой выкатке: кампания оставалась
+          # наполовину разосланной и возвращалась в расписание сборщиком лишь
+          # спустя четверть часа. docker compose сам пересоздаёт контейнер,
+          # если образ или конфигурация изменились, — этого достаточно.
+          docker compose up -d --force-recreate web
+          docker compose up -d worker scheduler
 
           PORT_APP=$(grep -E '^APP_PORT=' .env | cut -d= -f2 | tr -d '[:space:]')
           PORT_APP=${PORT_APP:-8002}
@@ -274,4 +280,27 @@ jobs:
           echo "Сервис не ответил на /health. Журнал:"
           docker compose logs --tail 60 web
           exit 1
+          REMOTE
+
+      - name: Проверка планировщика
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+          HOST: ${{ secrets.SSH_HOST }}
+          PORT: ${{ secrets.SSH_PORT || 22 }}
+          USER: ${{ secrets.SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/rassilka' }}
+        run: |
+          # Без планировщика запланированные кампании просто не уходят, а
+          # health при этом зелёный — ровно та поломка, которую не замечали.
+          sshpass -e ssh -p "$PORT" -o StrictHostKeyChecking=no \
+            "$USER@$HOST" DEPLOY_PATH="$DEPLOY_PATH" bash -s <<'REMOTE'
+          set -e
+          cd "$DEPLOY_PATH"
+          if [ "$(docker inspect -f '{{.State.Running}}' rassilka-scheduler 2>/dev/null)" != "true" ]; then
+            echo "Контейнер планировщика не запущен — расписание работать не будет."
+            docker compose logs --tail 40 scheduler || true
+            exit 1
+          fi
+          echo "Планировщик работает:"
+          docker compose logs --tail 10 scheduler || true
           REMOTE
