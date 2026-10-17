@@ -395,7 +395,17 @@ def build_html(image_url: str, base_url: str) -> str:
 
 def main() -> int:
     apply = "--apply" in sys.argv
-    base_url = (os.environ.get("PUBLIC_BASE_URL", "") or "http://localhost:8000").rstrip("/")
+    configured_base = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    base_url = configured_base or "http://localhost:8000"
+
+    if not configured_base:
+        # Молча подставить localhost нельзя: картинка и кнопка в письме будут
+        # вести на адрес, которого у получателя нет, и проверка покажет
+        # «картинка не дошла» там, где на самом деле не настроен адрес сервиса.
+        print("ВНИМАНИЕ: PUBLIC_BASE_URL не задан в .env.")
+        print("  Картинка и кнопка в письме будут вести на localhost и у получателя не откроются.")
+        print("  Пропишите в .env адрес, по которому сервис доступен из интернета, и повторите.")
+        print()
 
     image_url = _ensure_image(base_url)
     document = build_document(image_url, base_url)
