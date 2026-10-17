@@ -43,14 +43,13 @@ def _ago(moment: datetime | None, now: datetime) -> str:
     return f"{minutes // 60} ч {minutes % 60} мин назад"
 
 
-def main() -> int:  # noqa: C901 — отчёт линейный, дробить его на части некуда
+def main() -> int:
     try:
-        from sqlalchemy import func, select
-        from sqlalchemy.orm import Session as OrmSession
-
         from cbmail.db.models import Campaign, CampaignLog, SmtpProfile
         from cbmail.db.session import get_sync_engine
         from cbmail.domain.campaign import CampaignStatus
+        from sqlalchemy import func, select
+        from sqlalchemy.orm import Session as OrmSession
     except Exception as exc:  # noqa: BLE001 — сообщение важнее разбора причины
         print(f"Состояние рассылок получить не удалось: {exc}")
         return 0
@@ -108,7 +107,7 @@ def main() -> int:  # noqa: C901 — отчёт линейный, дробить
                 if last_seen is not None:
                     quiet = max(15, (interval or 0) // 60 + 10)
                     if last_seen < now - timedelta(minutes=quiet):
-                        note = "  ← молчит дольше нормы, будет возвращена в расписание"
+                        note = "  <- молчит дольше нормы, будет возвращена в расписание"
                 print(f"  #{campaign_id} {name} — активность {_ago(updated_at, now)}{note}")
 
         # «Запланирована» на будущее — самый частый повод для вопроса «почему
@@ -157,7 +156,7 @@ def main() -> int:  # noqa: C901 — отчёт линейный, дробить
                     )
                 ).scalar() or 0
                 left = profile.daily_limit - used
-                mark = "  ← квота исчерпана, остаток уйдёт после полуночи" if left <= 0 else ""
+                mark = "  <- квота исчерпана, остаток уйдёт после полуночи" if left <= 0 else ""
                 print(
                     f"  {profile.email_host_user}: {used} из {profile.daily_limit}, "
                     f"осталось {max(0, left)}{mark}"
