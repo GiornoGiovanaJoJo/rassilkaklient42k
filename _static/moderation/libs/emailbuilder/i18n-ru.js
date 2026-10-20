@@ -103,7 +103,50 @@
     "Center": "По центру",
     "Right": "Справа",
     "Top": "Сверху",
-    "Bottom": "Снизу"
+    "Bottom": "Снизу",
+
+    // --- Разделы инспектора и холст ---
+    "Global": "Общее",
+    "Dimensions": "Размеры",
+    "Click on a block to inspect.": "Нажмите на блок, чтобы увидеть его настройки.",
+    "Backdrop color": "Цвет подложки",
+    "Canvas color": "Цвет холста",
+    "Canvas border color": "Цвет рамки холста",
+    "Canvas border radius": "Скругление углов холста",
+    "Button color": "Цвет кнопки",
+    "Image URL": "Адрес картинки",
+    "Upload image": "Загрузить картинку",
+    "Plain text": "Простой текст",
+    "Nested Text": "Вложенный текст",
+    "Markdown (GitHub flavored)": "Markdown (GitHub)",
+
+    // --- Подсказки на кнопках верхней панели ---
+    "Desktop view": "Вид на компьютере",
+    "Mobile view": "Вид на телефоне",
+    "Download JSON file": "Скачать файл JSON",
+    "Share current template": "Поделиться шаблоном",
+    "HTML output": "HTML‑код письма",
+    "JSON output": "JSON письма",
+    "Open dashboard": "Открыть панель",
+    "Expand": "Развернуть",
+    "Move up": "Выше",
+    "Move down": "Ниже",
+    "Strikethrough (select text first)": "Зачёркнутый (сначала выделите текст)",
+    "Text color (select text first)": "Цвет текста (сначала выделите текст)",
+
+    // --- Готовые шаблоны в списке слева ---
+    "Empty": "Пустой",
+    "Welcome email": "Приветственное письмо",
+    "One-time passcode (OTP)": "Одноразовый код (OTP)",
+    "Reset password": "Сброс пароля",
+    "E-commerce receipt": "Чек интернет‑магазина",
+    "Subscription receipt": "Чек подписки",
+    "Reservation reminder": "Напоминание о брони",
+    "Post metrics": "Статистика публикации",
+    "Respond to inquiry": "Ответ на обращение",
+
+    // --- Диалоги ---
+    "This will override your current template.": "Это заменит текущий шаблон."
   };
 
   // Атрибуты-подписи, которые тоже переводим (подсказки, placeholder).
