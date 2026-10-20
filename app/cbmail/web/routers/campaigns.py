@@ -29,14 +29,13 @@ from cbmail.db.models import (
     Profile,
     SmtpProfile,
 )
-from cbmail.domain import composer
+from cbmail.domain import composer, recipient_list
 from cbmail.domain.campaign import CampaignStatus, clamp_batch_size, clamp_interval
 from cbmail.domain.emails import (
     is_valid_email,
     join_emails,
     normalize_email,
     parse_emails,
-    split_emails,
 )
 from cbmail.domain.recipients import RecipientFileError, extract_emails
 from cbmail.web.deps import get_db, redirect, require_user, verify_csrf
@@ -145,12 +144,16 @@ async def _save_attachments(
     return saved, warnings
 
 
-async def _emails_from_file(upload: UploadFile | None) -> tuple[list[str], str | None, str | None]:
-    """Адреса из загруженного файла: (адреса, сообщение, ошибка).
+async def _named_from_file(
+    upload: UploadFile | None,
+) -> tuple[list[tuple[str, str]], str | None, str | None]:
+    """Получатели из загруженного файла: (пары адрес-имя, сообщение, ошибка).
 
     Списки приходят выгрузкой из 1С или CRM, а не текстом в поле. Разбор
     отделён от формы, чтобы ошибку файла можно было показать рядом с полем, а
     не терять рассылку целиком: адреса, вписанные руками, при этом сохраняются.
+    Имя (для обращения {{name}}) берётся из колонки с подходящим заголовком,
+    если она есть.
     """
     if upload is None or not upload.filename:
         return [], None, None
@@ -160,12 +163,15 @@ async def _emails_from_file(upload: UploadFile | None) -> tuple[list[str], str |
     except RecipientFileError as exc:
         return [], None, f"Файл «{upload.filename}»: {exc}"
 
+    with_names = sum(1 for _, name in result.pairs if name)
     parts = [f"из файла добавлено адресов: {len(result.emails)}"]
+    if with_names:
+        parts.append(f"с именами: {with_names}")
     if result.skipped_duplicates:
         parts.append(f"повторов пропущено: {result.skipped_duplicates}")
     if result.skipped_invalid:
         parts.append(f"строк не принято: {result.skipped_invalid}")
-    return result.emails, "; ".join(parts), None
+    return result.pairs, "; ".join(parts), None
 
 
 # --- Список ------------------------------------------------------------------
@@ -279,13 +285,13 @@ async def create_campaign(
     recipients_file: UploadFile | None = File(default=None),
 ):
     message = await _resolve_message(db, message, template_id)
-    valid, invalid = split_emails(recipient_emails)
-    from_file, file_notice, file_error = await _emails_from_file(recipients_file)
-    # Адреса из файла дописываются к вписанным руками: человек нередко
-    # добавляет к выгрузке пару адресов «и ещё этим».
-    for email in from_file:
-        if email not in valid:
-            valid.append(email)
+    typed, invalid = recipient_list.split_named(recipient_emails)
+    from_file, file_notice, file_error = await _named_from_file(recipients_file)
+    # Получатели из файла дописываются к вписанным руками: человек нередко
+    # добавляет к выгрузке пару адресов «и ещё этим». Имя из ручного ввода
+    # приоритетнее файла (merge_pairs: первый список главнее).
+    recipients = recipient_list.merge_pairs(typed, from_file)
+    valid = recipient_list.emails_only(recipients)
     error = file_error or _validate(name, subject, message, valid)
     scheduled = _parse_schedule(scheduled_time)
     # send_now не требует даты; schedule — требует
@@ -318,7 +324,7 @@ async def create_campaign(
         name=name.strip(),
         subject=subject.strip(),
         message=message,
-        recipient_emails=join_emails(valid),
+        recipient_emails=recipient_list.format_lines(recipients),
         stop_list=join_emails(parse_emails(stop_list)),
         use_smtp_settings_id=_int_or_none(use_smtp_settings_id),
         message_count=clamp_batch_size(message_count),
@@ -389,7 +395,7 @@ async def campaign_detail(
         header=profile.message_header if profile else None,
         footer=profile.message_footer if profile else None,
         add_unsubscribe=True,
-    ).personalize("example@mail.ru", "#")
+    ).personalize("example@mail.ru", "#", name="Иван")
     return render(
         request,
         "campaigns/detail.html",
@@ -468,11 +474,10 @@ async def update_campaign(
         return redirect(f"/campaigns/{campaign_id}", err="Нельзя редактировать идущую рассылку.")
 
     message = await _resolve_message(db, message, template_id)
-    valid, invalid = split_emails(recipient_emails)
-    from_file, file_notice, file_error = await _emails_from_file(recipients_file)
-    for email in from_file:
-        if email not in valid:
-            valid.append(email)
+    typed, invalid = recipient_list.split_named(recipient_emails)
+    from_file, file_notice, file_error = await _named_from_file(recipients_file)
+    recipients = recipient_list.merge_pairs(typed, from_file)
+    valid = recipient_list.emails_only(recipients)
     error = file_error or _validate(name, subject, message, valid)
     scheduled = _parse_schedule(scheduled_time)
     if intent == "schedule" and scheduled is None:
@@ -496,7 +501,7 @@ async def update_campaign(
     campaign.name = name.strip()
     campaign.subject = subject.strip()
     campaign.message = message
-    campaign.recipient_emails = join_emails(valid)
+    campaign.recipient_emails = recipient_list.format_lines(recipients)
     campaign.stop_list = join_emails(parse_emails(stop_list))
     campaign.use_smtp_settings_id = _int_or_none(use_smtp_settings_id)
     await _set_mailboxes(db, campaign, _wanted_mailboxes(smtp_ids, await _user_profiles(db, user)))

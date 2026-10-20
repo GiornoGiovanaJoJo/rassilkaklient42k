@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cbmail.core.config import get_settings
 from cbmail.db.models import (
     Message,
     MessageDir,
@@ -149,6 +150,8 @@ def _send_single(profile: SmtpProfile, recipients: list[str], subject: str, body
     composed = composer.compose(
         subject=subject, body=body,
         header=profile.message_header, footer=profile.message_footer,
+        # Относительные адреса картинок → полные, иначе у получателя пусто.
+        images_base_url=get_settings().public_base_url or None,
     )
     from_email = resolve_from_email(credentials, profile.default_from_email)
     with SmtpSession(credentials) as smtp:

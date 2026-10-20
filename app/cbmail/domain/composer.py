@@ -17,6 +17,7 @@ from html import unescape
 from html.parser import HTMLParser
 
 from cbmail.domain.html_document import (
+    absolutize_images,
     cap_images,
     constrain_for_outlook,
     ensure_email_document,
@@ -27,6 +28,11 @@ from cbmail.domain.html_document import (
 # ссылки отписки вида https://site/unsubscribe/{{email}}/
 EMAIL_PLACEHOLDER = "{{email}}"
 UNSUBSCRIBE_PLACEHOLDER = "{{unsubscribe_url}}"
+# Обращение к адресату. Имя берётся из списка получателей (колонка/формат
+# «email, Имя»); если имени нет — подставляется запасное слово DEFAULT_NAME,
+# чтобы «Здравствуйте, {{name}}!» не превращалось в «Здравствуйте, !».
+NAME_PLACEHOLDER = "{{name}}"
+DEFAULT_NAME = "коллеги"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,21 +41,36 @@ class ComposedMessage:
     text_body: str
     html_body: str | None
 
-    def personalize(self, email: str, unsubscribe_url: str | None = None) -> ComposedMessage:
-        """Подставить адрес получателя в заранее собранное тело.
+    def personalize(
+        self,
+        email: str,
+        unsubscribe_url: str | None = None,
+        name: str | None = None,
+    ) -> ComposedMessage:
+        """Подставить адрес и обращение получателя в заранее собранное тело.
 
         Выполняется для каждого получателя отдельно, но разбор и сборка тела —
         один раз на кампанию: раньше HTML-шаблон рендерился заново на каждое
         письмо, что на рассылке в 10 000 адресов означало 10 000 рендеров.
+
+        ``name`` — имя адресата из списка получателей. Пустое имя заменяется
+        запасным обращением DEFAULT_NAME. В HTML-версии имя ЭКРАНИРУЕТСЯ: имя
+        вроде ``A & B <отдел>`` иначе сломало бы вёрстку письма или позволило бы
+        подмешать разметку из списка получателей.
         """
-        replacements = {EMAIL_PLACEHOLDER: email}
+        display = name.strip() if name and name.strip() else DEFAULT_NAME
+
+        base = {EMAIL_PLACEHOLDER: email, NAME_PLACEHOLDER: display}
         if unsubscribe_url is not None:
-            replacements[UNSUBSCRIBE_PLACEHOLDER] = unsubscribe_url
+            base[UNSUBSCRIBE_PLACEHOLDER] = unsubscribe_url
+
+        html_repl = dict(base)
+        html_repl[NAME_PLACEHOLDER] = _escape_name(display)
 
         return ComposedMessage(
-            subject=_apply(self.subject, replacements),
-            text_body=_apply(self.text_body, replacements),
-            html_body=_apply(self.html_body, replacements) if self.html_body else None,
+            subject=_apply(self.subject, base),
+            text_body=_apply(self.text_body, base),
+            html_body=_apply(self.html_body, html_repl) if self.html_body else None,
         )
 
 
@@ -57,6 +78,16 @@ def _apply(text: str, replacements: dict[str, str]) -> str:
     for placeholder, value in replacements.items():
         text = text.replace(placeholder, value)
     return text
+
+
+def _escape_name(value: str) -> str:
+    """Экранировать имя для вставки в HTML-тело (без превращения \\n в <br>)."""
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def compose(
@@ -67,6 +98,7 @@ def compose(
     footer: str | None = None,
     body_is_html: bool | None = None,
     add_unsubscribe: bool = False,
+    images_base_url: str | None = None,
 ) -> ComposedMessage:
     """Собрать письмо из тела, шапки и подвала.
 
@@ -81,6 +113,11 @@ def compose(
     это КЛИКАБЕЛЬНОЕ СЛОВО-ссылка, а не голый URL. Текстовая версия (для клиентов
     без HTML) сохраняет адрес ссылки рядом. Плейсхолдер подставляется адресно при
     отправке каждому получателю.
+
+    ``images_base_url`` — домен сервиса. Если задан, относительные адреса
+    картинок в HTML-версии превращаются в полные: иначе у получателя на месте
+    картинки пусто (см. html_document.absolutize_images). Для предпросмотра в
+    браузере не нужен — там относительный адрес и так открывается.
     """
     body = body or ""
     if body_is_html is None:
@@ -91,6 +128,7 @@ def compose(
 
     if body_is_html:
         html_body = _wrap_html(body, header=header, footer=footer, add_unsubscribe=want_footer)
+        html_body = absolutize_images(html_body, images_base_url)
         text_body = html_to_text(html_body)
         return ComposedMessage(subject=subject, text_body=text_body, html_body=html_body)
 
@@ -98,6 +136,7 @@ def compose(
     if want_footer:
         # HTML-версия из простого текста нужна ровно ради кликабельной «Отписаться».
         html_body = _plain_to_html(text_body) + _html_unsub_footer()
+        html_body = absolutize_images(html_body, images_base_url)
         text_body = text_body + _text_unsub_footer()
         return ComposedMessage(subject=subject, text_body=text_body, html_body=html_body)
 

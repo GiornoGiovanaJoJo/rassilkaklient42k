@@ -265,3 +265,31 @@ class TestCombineBody:
         assert result.html_body is not None
         assert "Привет" in result.html_body and "Промо" in result.html_body
         assert ">Отписаться</a>" in result.html_body
+
+
+class TestNamePlaceholder:
+    """Подстановка обращения {{name}} (новая функция по просьбе клиента)."""
+
+    def test_name_substituted_in_all_parts(self) -> None:
+        msg = composer.compose(subject="Привет, {{name}}!", body="Здравствуйте, {{name}}!")
+        out = msg.personalize("ivan@mail.ru", name="Иван")
+        assert out.subject == "Привет, Иван!"
+        assert "Здравствуйте, Иван!" in out.text_body
+
+    def test_missing_name_uses_default(self) -> None:
+        msg = composer.compose(subject="Т", body="Здравствуйте, {{name}}!")
+        out = msg.personalize("ivan@mail.ru", name=None)
+        assert f"Здравствуйте, {composer.DEFAULT_NAME}!" in out.text_body
+
+    def test_blank_name_uses_default(self) -> None:
+        msg = composer.compose(subject="Т", body="Здравствуйте, {{name}}!")
+        out = msg.personalize("ivan@mail.ru", name="   ")
+        assert composer.DEFAULT_NAME in out.text_body
+
+    @pytest.mark.regression
+    def test_name_is_escaped_in_html(self) -> None:
+        """Имя из списка получателей не должно ломать вёрстку или подмешивать теги."""
+        msg = composer.compose(subject="Т", body="<p>Привет, {{name}}!</p>")
+        out = msg.personalize("ivan@mail.ru", name="A & B <b>")
+        assert "A &amp; B &lt;b&gt;" in out.html_body
+        assert "<b>" not in out.html_body.split("Привет")[1][:40]

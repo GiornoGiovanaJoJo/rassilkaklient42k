@@ -54,7 +54,7 @@ from cbmail.db.models import (
     StopListRow,
     Unsubscribe,
 )
-from cbmail.domain import composer, tracking
+from cbmail.domain import composer, recipient_list, tracking
 from cbmail.domain.campaign import CampaignStatus, build_send_plan, clamp_batch_size, clamp_interval
 from cbmail.domain.emails import email_domain, normalize_email, parse_emails
 from cbmail.smtp.sender import (
@@ -232,9 +232,13 @@ def send_campaign(
             capped_by_limit = True
 
         # Тело письма собирается один раз на кампанию; для каждого получателя
-        # выполняется только подстановка адреса.
+        # выполняется только подстановка адреса и имени.
         message = _compose(campaign)
         attachments = _load_attachments(session, campaign)
+        # Карта «адрес → имя» для подстановки {{name}}. Берётся из того же поля
+        # получателей (формат «email, Имя»); адреса без имени получат запасное
+        # обращение при подстановке.
+        names = recipient_list.name_map(campaign.recipient_emails)
 
         _start(session, campaign, plan.total, plan.already_sent, now=now)
 
@@ -257,6 +261,7 @@ def send_campaign(
                 run_token=campaign.run_token,
                 pending=pending,
                 message=message,
+                names=names,
                 attachments=attachments,
                 interval=interval,
                 batch_size=batch_size,
@@ -727,6 +732,11 @@ def _compose(campaign: Campaign) -> composer.ComposedMessage:
         header=profile.message_header if profile else None,
         footer=profile.message_footer if profile else None,
         add_unsubscribe=True,
+        # Домен сервиса: относительные адреса картинок (/media/...) превращаются
+        # в полные, иначе у получателя на их месте пусто. Берём именно
+        # настроенный публичный адрес, а не запасной localhost из _base_url():
+        # приклеивать к картинке http://localhost хуже, чем оставить как есть.
+        images_base_url=get_settings().public_base_url or None,
     )
 
 
@@ -875,6 +885,7 @@ def _run_sender(
     pending: queue.Queue[str],
     cancelled: threading.Event,
     message: composer.ComposedMessage,
+    names: dict[str, str],
     attachments: list[Attachment],
     interval: int,
     batch_size: int,
@@ -996,7 +1007,9 @@ def _run_sender(
                 return result
 
             unsub_url = composer.build_unsubscribe_url(base_url, email, scope=sender.scope_domain)
-            personalized = message.personalize(email, unsub_url)
+            personalized = message.personalize(
+                email, unsub_url, name=names.get(normalize_email(email))
+            )
             # Пиксель открытия и переходы по ссылкам. Встраиваются после
             # подстановок: иначе адрес получателя в ссылке отписки не попал бы
             # в письмо, а счётчики считали бы одно письмо на всех.
@@ -1050,6 +1063,7 @@ def _dispatch(
     run_token: str | None,
     pending: queue.Queue[str],
     message: composer.ComposedMessage,
+    names: dict[str, str],
     attachments: list[Attachment],
     interval: int,
     batch_size: int,
@@ -1076,6 +1090,7 @@ def _dispatch(
                 pending=pending,
                 cancelled=cancelled,
                 message=message,
+                names=names,
                 attachments=attachments,
                 interval=interval,
                 batch_size=batch_size,
@@ -1100,6 +1115,7 @@ def _dispatch(
                     pending=pending,
                     cancelled=cancelled,
                     message=message,
+                    names=names,
                     attachments=attachments,
                     interval=interval,
                     batch_size=batch_size,
@@ -1372,9 +1388,11 @@ def send_test_email(session: Session, campaign: Campaign, recipient: str) -> Non
         session, campaign, now=lambda: datetime.now(timezone.utc)
     )
     message = _compose(campaign)
+    names = recipient_list.name_map(campaign.recipient_emails)
     personalized = message.personalize(
         recipient,
         composer.build_unsubscribe_url(_base_url(), recipient, scope=email_domain(from_email)),
+        name=names.get(normalize_email(recipient)),
     )
     outgoing = OutgoingMessage(
         subject=f"[Проверка] {personalized.subject}",

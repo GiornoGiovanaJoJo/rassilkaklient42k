@@ -128,6 +128,49 @@ def _head_extras(html: str) -> str:
     return extras
 
 
+# --- Абсолютные адреса картинок ---------------------------------------------
+#
+# Картинку в письмо вставляют через конструктор, и он сохраняет её по адресу
+# вида ``/media/email_images/foo.png`` — относительному. В браузере (редактор,
+# предпросмотр) такой адрес достраивается до текущего сайта и картинка видна, а
+# в ПИСЬМЕ достраивать не от чего: почтовый клиент получателя не знает, с какого
+# сайта брать ``/media/...``, и показывает пустое место. Поэтому перед отправкой
+# корневые относительные адреса картинок превращаются в полные по домену
+# сервиса (PUBLIC_BASE_URL). Трогаем только адреса, начинающиеся с одного «/»:
+# полные ``http(s)://``, протокол-относительные ``//``, ``data:`` и ``cid:``
+# оставляем как есть.
+
+_IMG_SRC_RE = re.compile(r'(\ssrc\s*=\s*)(["\'])(/[^/][^"\']*)\2', re.IGNORECASE)
+_BG_ATTR_RE = re.compile(r'(\sbackground\s*=\s*)(["\'])(/[^/][^"\']*)\2', re.IGNORECASE)
+_CSS_URL_RE = re.compile(r'(url\(\s*)(["\']?)(/[^/)][^"\')]*)\2(\s*\))', re.IGNORECASE)
+
+
+def absolutize_images(html: str, base_url: str | None) -> str:
+    """Сделать корневые относительные адреса картинок полными по ``base_url``.
+
+    Без домена (``base_url`` пуст) возвращает письмо как есть: лучше оставить
+    относительный адрес, который хотя бы виден в браузере, чем приклеить к нему
+    ``http://localhost``. Покрываются ``<img src>``, атрибут ``background`` и
+    фоновые картинки в CSS (``url(...)``) — остальную разметку не трогаем.
+    """
+    if not html or not base_url:
+        return html
+    base = base_url.rstrip("/")
+
+    def _img(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}{base}{match.group(3)}{match.group(2)}"
+
+    def _bg(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}{base}{match.group(3)}{match.group(2)}"
+
+    def _css(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{match.group(2)}{base}{match.group(3)}{match.group(2)}{match.group(4)}"
+
+    html = _IMG_SRC_RE.sub(_img, html)
+    html = _BG_ATTR_RE.sub(_bg, html)
+    return _CSS_URL_RE.sub(_css, html)
+
+
 def ensure_email_document(html: str) -> str:
     """Привести письмо к виду законченного документа с заполненным ``<head>``.
 

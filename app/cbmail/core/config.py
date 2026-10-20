@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     media_url: str = "/media/"
     static_url: str = "/static/"
 
+    # --- Публичный адрес сервиса ---
+    # Полный внешний адрес (https://домен). По нему строятся абсолютные ссылки
+    # в письмах: отписка, трекинг и, главное, адреса картинок — относительный
+    # /media/... у получателя не открывается. Пустой — ссылки останутся
+    # относительными/локальными (годно только для локальной разработки).
+    public_base_url: str = Field(default="", alias="PUBLIC_BASE_URL")
+
     # --- Лицензия ---
     license_file: Path | None = Field(default=None, alias="LICENSE_FILE")
 

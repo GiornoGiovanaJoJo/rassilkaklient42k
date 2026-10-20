@@ -26,6 +26,7 @@ import re
 
 from cbmail.domain.composer import compose, html_to_text
 from cbmail.domain.html_document import (
+    absolutize_images,
     cap_images,
     constrain_for_outlook,
     ensure_email_document,
@@ -268,3 +269,30 @@ class TestOutlookFrame:
         out = constrain_for_outlook(document)
         # Всё добавленное — комментарии: выкинув их, получаем исходный документ.
         assert re.sub(r"<!--\[if mso\]>.*?<!\[endif\]-->", "", out, flags=re.DOTALL) == document
+
+
+class TestAbsolutizeImages:
+    """Относительные адреса картинок → полные (иначе у получателя пусто)."""
+
+    def test_relative_img_src_made_absolute(self) -> None:
+        html = '<img src="/media/email_images/foo.png">'
+        out = absolutize_images(html, "https://mail.example.ru/")
+        assert out == '<img src="https://mail.example.ru/media/email_images/foo.png">'
+
+    def test_absolute_and_data_urls_untouched(self) -> None:
+        html = '<img src="https://cdn/x.png"><img src="data:image/png;base64,AAAA">'
+        assert absolutize_images(html, "https://m.ru") == html
+
+    def test_protocol_relative_untouched(self) -> None:
+        html = '<img src="//cdn/x.png">'
+        assert absolutize_images(html, "https://m.ru") == html
+
+    def test_css_background_url(self) -> None:
+        html = '<div style="background-image:url(/media/bg.jpg)"></div>'
+        out = absolutize_images(html, "https://m.ru")
+        assert "url(https://m.ru/media/bg.jpg)" in out
+
+    def test_no_base_url_leaves_html_unchanged(self) -> None:
+        html = '<img src="/media/foo.png">'
+        assert absolutize_images(html, "") == html
+        assert absolutize_images(html, None) == html

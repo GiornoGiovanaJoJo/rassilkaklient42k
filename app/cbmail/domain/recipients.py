@@ -30,8 +30,9 @@ from __future__ import annotations
 import io
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from cbmail.domain import recipient_list
 from cbmail.domain.emails import is_valid_email, normalize_email
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,10 @@ class ImportResult:
     total_found: int
     skipped_invalid: int
     skipped_duplicates: int
+    #: Пары «адрес, имя» в том же порядке, что и ``emails``. Имя пустое, если в
+    #: файле его распознать не удалось. На основе этого поля письмо подставляет
+    #: обращение ``{{name}}``.
+    pairs: list[tuple[str, str]] = field(default_factory=list)
 
 
 def extension_of(filename: str) -> str:
@@ -140,6 +145,93 @@ def _from_xls(data: bytes) -> list[str]:
     return found
 
 
+# --- Распознавание имён ------------------------------------------------------
+#
+# Имя адресата нужно для обращения {{name}} в письме. В текстовых файлах имя
+# берётся из той же построчной логики, что и при ручном вводе; в таблицах —
+# по строкам: в строке ищется адрес, а имя берётся из колонки с подходящим
+# заголовком (или первой текстовой ячейки строки). Распознавание имён никогда
+# не мешает извлечению адресов: любая ошибка здесь гасится и даёт пустые имена.
+
+#: Заголовки, по которым опознаётся колонка с именем/обращением.
+_NAME_HEADER_HINTS = ("имя", "фио", "обращени", "получател", "контакт", "name", "client")
+
+
+def _rows_from_xlsx(data: bytes) -> list[list[str]]:
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    rows: list[list[str]] = []
+    try:
+        for sheet in workbook.worksheets:
+            for row in sheet.iter_rows(values_only=True):
+                rows.append(["" if cell is None else str(cell) for cell in row])
+    finally:
+        workbook.close()
+    return rows
+
+
+def _rows_from_xls(data: bytes) -> list[list[str]]:
+    import xlrd
+
+    book = xlrd.open_workbook(file_contents=data)
+    rows: list[list[str]] = []
+    for sheet in book.sheets():
+        for row_index in range(sheet.nrows):
+            rows.append(
+                ["" if cell in (None, "") else str(cell) for cell in sheet.row_values(row_index)]
+            )
+    return rows
+
+
+def _detect_name_col(rows: list[list[str]]) -> int | None:
+    """Индекс колонки с именем по заголовку в первой строке (или None)."""
+    if not rows:
+        return None
+    for idx, cell in enumerate(rows[0]):
+        text = cell.strip().lower()
+        if text and any(hint in text for hint in _NAME_HEADER_HINTS):
+            return idx
+    return None
+
+
+def _name_map_from_rows(rows: list[list[str]]) -> dict[str, str]:
+    name_col = _detect_name_col(rows)
+    result: dict[str, str] = {}
+    for row in rows:
+        email = next((c.strip() for c in row if is_valid_email(c.strip())), None)
+        if email is None:
+            continue
+        key = normalize_email(email)
+        if key in result:
+            continue
+        name = ""
+        if name_col is not None and name_col < len(row):
+            candidate = row[name_col].strip()
+            if candidate and not is_valid_email(candidate):
+                name = candidate
+        if not name:
+            name = next(
+                (c.strip() for c in row if c.strip() and not is_valid_email(c.strip())), ""
+            )
+        if name:
+            result[key] = name
+    return result
+
+
+def _names_for(ext: str, data: bytes) -> dict[str, str]:
+    """Карта «нормализованный адрес → имя» для формата файла. Не бросает."""
+    try:
+        if ext == ".xlsx":
+            return _name_map_from_rows(_rows_from_xlsx(data))
+        if ext == ".xls":
+            return _name_map_from_rows(_rows_from_xls(data))
+        return recipient_list.name_map(decode_text(data))
+    except Exception:
+        logger.info("не удалось распознать имена в файле %s", ext, exc_info=True)
+        return {}
+
+
 def extract_emails(filename: str, data: bytes) -> ImportResult:
     """Разобрать файл и вернуть нормализованные адреса без повторов.
 
@@ -184,9 +276,15 @@ def extract_emails(filename: str, data: bytes) -> ImportResult:
     if not emails:
         raise RecipientFileError("В файле не нашлось ни одного адреса")
 
+    # Имена привязываются к уже отобранным адресам — порядок и дедупликация
+    # адресов при этом не меняются, имя лишь добавляется там, где нашлось.
+    name_by_email = _names_for(ext, data)
+    pairs = [(email, name_by_email.get(normalize_email(email), "")) for email in emails]
+
     return ImportResult(
         emails=emails,
         total_found=len(raw),
         skipped_invalid=invalid,
         skipped_duplicates=duplicates,
+        pairs=pairs,
     )

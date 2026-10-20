@@ -46,6 +46,7 @@
         <details class="mt-2">
           <summary class="text-body-secondary small" style="cursor:pointer">Для опытных: подстановки в тексте</summary>
           <div class="form-text mt-1">
+            <code>{{ '{{name}}' }}</code> — подставит имя адресата (обращение). Если имя не указано — «коллеги».<br>
             <code>{{ '{{email}}' }}</code> — подставит адрес получателя в текст.<br>
             <code>{{ '{{unsubscribe_url}}' }}</code> — если вставите сами, ссылка отписки встанет именно туда (иначе — в конец письма).
           </div>
@@ -55,15 +56,21 @@
     <div class="card shadow-sm mb-4">
       <div class="card-body">
         <div class="mb-3"><label class="form-label" for="c_recipients">Кому отправить — список адресов</label>
-          <textarea id="c_recipients" name="recipient_emails" class="form-control" rows="5" placeholder="ivan@mail.ru, petr@mail.ru&#10;anna@mail.ru">{{ c.recipient_emails if c else '' }}</textarea>
-          <div class="form-text">Впишите email-адреса через запятую или каждый с новой строки. Повторы уберём сами.</div></div>
+          <textarea id="c_recipients" name="recipient_emails" class="form-control" rows="5" placeholder="ivan@mail.ru, petr@mail.ru&#10;anna@mail.ru&#10;Иван Петров &lt;ivan@mail.ru&gt;">{{ c.recipient_emails if c else '' }}</textarea>
+          <div class="form-text">
+            Впишите email-адреса через запятую или каждый с новой строки. Повторы уберём сами.<br>
+            <b>Чтобы в письме было обращение по имени</b> (подстановка <code>{{ '{{name}}' }}</code>), укажите имя рядом с адресом — каждого с новой строки:
+            <code>ivan@mail.ru, Иван</code> или <code>Иван Петров &lt;ivan@mail.ru&gt;</code>.
+          </div></div>
         <div class="mb-3">
           <label class="form-label" for="c_recipients_file">…или загрузите файл со списком</label>
           <input id="c_recipients_file" name="recipients_file" type="file" class="form-control"
                  accept=".txt,.csv,.xlsx,.xls">
           <div class="form-text">
             XLSX, XLS, CSV или TXT — адреса найдём в любой колонке и на любом листе.
-            Они добавятся к тем, что вписаны выше; повторы уберём.
+            Для обращения по имени добавьте в таблицу колонку с заголовком
+            <b>Имя</b> (или «ФИО», «Обращение») — имя подставится в <code>{{ '{{name}}' }}</code>.
+            Получатели добавятся к тем, что вписаны выше; повторы уберём.
           </div>
         </div>
         <div class="mb-0"><label class="form-label" for="c_stoplist">Кого НЕ отправлять <span class="text-body-secondary">(по желанию)</span></label>
