@@ -145,23 +145,74 @@ async def _smtp_profiles(db: AsyncSession, user: Profile) -> list[SmtpProfile]:
 
 
 def _send_single(profile: SmtpProfile, recipients: list[str], subject: str, body: str) -> None:
-    """Отправить одно письмо на список адресов (синхронно, для to_thread)."""
+    """Отправить одно письмо на список адресов (синхронно, для to_thread).
+
+    При включённой канцелярии (``correspondence_enabled``) каждому письму
+    присваивается регистрационный номер, в заголовки ставится мета-ссылка
+    «Ответить», а факт отправки пишется в журнал — чтобы потом связать ответ с
+    исходным письмом. При выключенном флаге поведение прежнее.
+    """
+    settings = get_settings()
     credentials = SmtpCredentials.from_profile(profile)
     composed = composer.compose(
         subject=subject, body=body,
         header=profile.message_header, footer=profile.message_footer,
         # Относительные адреса картинок → полные, иначе у получателя пусто.
-        images_base_url=get_settings().public_base_url or None,
+        images_base_url=settings.public_base_url or None,
     )
     from_email = resolve_from_email(credentials, profile.default_from_email)
-    with SmtpSession(credentials) as smtp:
+
+    if not settings.correspondence_enabled:
+        with SmtpSession(credentials) as smtp:
+            for addr in recipients:
+                personal = composed.personalize(addr)
+                outgoing = OutgoingMessage(
+                    subject=personal.subject, text_body=personal.text_body,
+                    html_body=personal.html_body, from_email=from_email,
+                )
+                smtp.send(outgoing, addr)
+        return
+
+    _send_single_with_correspondence(credentials, from_email, composed, recipients)
+
+
+def _send_single_with_correspondence(credentials, from_email, composed, recipients) -> None:
+    """Отправка с регистрацией каждого письма в канцелярии (флаг включён)."""
+    from cbmail.db.session import sync_session_scope
+    from cbmail.domain.correspondence import reply_link
+    from cbmail.domain.correspondence.events import EventType
+    from cbmail.services import correspondence as corr_svc
+
+    with sync_session_scope() as session, SmtpSession(credentials) as smtp:
         for addr in recipients:
+            reg = corr_svc.register_outgoing(
+                session, from_email=from_email, to_email=addr, subject=composed.subject
+            )
+            session.commit()  # номер и запись фиксируем до отправки
             personal = composed.personalize(addr)
             outgoing = OutgoingMessage(
-                subject=personal.subject, text_body=personal.text_body,
-                html_body=personal.html_body, from_email=from_email,
+                # Тему помечаем скрытым токеном (запасной канал привязки ответа).
+                subject=reply_link.tag_subject(personal.subject, reg.correspondence.tracking_id),
+                text_body=personal.text_body,
+                html_body=personal.html_body,
+                from_email=from_email,
+                headers=reg.headers,
             )
-            smtp.send(outgoing, addr)
+            try:
+                smtp.send(outgoing, addr)
+            except SmtpError as exc:
+                corr_svc.log_event(
+                    session, tracking_id=reg.correspondence.tracking_id,
+                    type=EventType.DELIVERY_FAILED, correspondence_id=reg.correspondence.id,
+                    error=str(exc),
+                )
+                session.commit()
+                raise
+            corr_svc.log_event(
+                session, tracking_id=reg.correspondence.tracking_id,
+                type=EventType.SENT, correspondence_id=reg.correspondence.id, to=addr,
+            )
+            session.commit()
 
 
 @router.get("/messages/new")

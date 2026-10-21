@@ -13,6 +13,7 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.templating import Jinja2Templates
 
+from cbmail.core.config import get_settings
 from cbmail.core.security import CSRF_FIELD_NAME, issue_csrf_token
 from cbmail.domain.campaign import CampaignStatus
 
@@ -64,6 +65,9 @@ templates.env.globals["csrf_input"] = csrf_input
 templates.env.globals["csrf_token"] = csrf_token
 templates.env.filters["status_label"] = status_label
 templates.env.filters["status_badge"] = status_badge
+# Флаг канцелярии — для показа пункта меню «Корреспонденция». Статичен (конфиг
+# фиксируется при старте), поэтому кладём глобалом, а не прокидываем в каждый ctx.
+templates.env.globals["correspondence_enabled"] = get_settings().correspondence_enabled
 
 
 def render(request: Request, name: str, context: dict | None = None, status_code: int = 200):

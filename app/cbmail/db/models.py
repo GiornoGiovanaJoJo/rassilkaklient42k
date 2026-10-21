@@ -669,3 +669,107 @@ class Session(Base):
     user_agent: Mapped[str | None] = mapped_column(String(400))
 
     user: Mapped[Profile] = relationship(lazy="joined")
+
+
+# --- Канцелярия: нумерация и трекинг корреспонденции ------------------------
+#
+# Аддитивные таблицы с префиксом ``cbmail_`` — как ``cbmail_session`` и
+# ``cbmail_unsubscribe``, чужие (Django) таблицы не задеты, создаются
+# идемпотентно через init_session. Весь модуль работает только при включённом
+# флаге ``correspondence_enabled``; при выключенном таблицы просто пусты.
+
+
+class Correspondence(Base):
+    """Единица корреспонденции: исходящее или входящее письмо под учётом.
+
+    Регистрационный номер (``reg_number``) — канцелярский, вида ``ИСХ-2026-000123``.
+    ``tracking_id`` — стабильный токен для связывания ответа (мета-ссылка) и
+    поиска в журнале. Для исходящих может быть задан срок ответа; факт ответа
+    фиксируется в ``replied_at`` при привязке входящего ответа.
+    """
+
+    __tablename__ = "cbmail_correspondence"
+
+    id: Mapped[int] = mapped_column(BIG_INT, primary_key=True, autoincrement=True)
+    direction: Mapped[str] = mapped_column(String(3))  # ВХ / ИСХ
+    reg_number: Mapped[str] = mapped_column(String(32), index=True)
+    tracking_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    year: Mapped[int] = mapped_column(Integer)
+    sequence: Mapped[int] = mapped_column(Integer)
+
+    subject: Mapped[str] = mapped_column(String(255), default="")
+    from_email: Mapped[str | None] = mapped_column(String(320))
+    to_email: Mapped[str | None] = mapped_column(String(320), index=True)
+    message_type: Mapped[str | None] = mapped_column(String(64))
+
+    #: Привязка к карточке контрагента (строковый id из системы заказчика).
+    contact_card_id: Mapped[str | None] = mapped_column(String(64), index=True)
+
+    #: Если письмо — часть массовой рассылки, ссылка на кампанию (необязательна).
+    campaign_id: Mapped[int | None] = mapped_column(
+        BIG_INT, ForeignKey("mail_massmailcampaign.id", ondelete="SET NULL")
+    )
+
+    #: Токен письма, НА КОТОРОЕ это является ответом (для входящих). Указывает на
+    #: tracking_id исходного — связь без жёсткого FK, чтобы ответ регистрировался
+    #: даже если исходное удалили.
+    in_reply_to_tracking_id: Mapped[str | None] = mapped_column(String(64), index=True)
+
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Денормализованный статус срока (ожидается/просрочен/получен) — для списка.
+    deadline_status: Mapped[str | None] = mapped_column(String(16))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("direction", "year", "sequence", name="cbmail_correspondence_regnum_uniq"),
+    )
+
+
+class CorrespondenceEvent(Base):
+    """Запись журнала событий письма (регистрация, отправка, ответ, срок…).
+
+    ``tracking_id`` продублирован и проиндексирован — журнал листается по письму
+    без join'а. ``payload`` — JSON-строка с деталями (адрес, ошибка, id карточки).
+    """
+
+    __tablename__ = "cbmail_correspondence_event"
+
+    id: Mapped[int] = mapped_column(BIG_INT, primary_key=True, autoincrement=True)
+    correspondence_id: Mapped[int | None] = mapped_column(
+        BIG_INT, ForeignKey("cbmail_correspondence.id", ondelete="CASCADE"), index=True
+    )
+    tracking_id: Mapped[str] = mapped_column(String(64), index=True)
+    type: Mapped[str] = mapped_column(String(32))
+    actor: Mapped[str | None] = mapped_column(String(150))
+    payload: Mapped[str] = mapped_column(Text, default="")
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
+
+
+class ContactCard(Base):
+    """Карточка контрагента для привязки писем по адресу (``cbmail_contact``).
+
+    Минимальная локальная копия/кэш справочника контрагентов: по ``email`` —
+    точная привязка, по ``domain`` — привязка новых сотрудников известной
+    организации. В установке с внешней системой контрагентов сюда синхронизируются
+    нужные поля; в автономной — ведётся вручную.
+    """
+
+    __tablename__ = "cbmail_contact"
+
+    id: Mapped[int] = mapped_column(BIG_INT, primary_key=True, autoincrement=True)
+    card_id: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    email: Mapped[str | None] = mapped_column(String(320), index=True)
+    domain: Mapped[str | None] = mapped_column(String(255), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, server_default=func.now()
+    )
