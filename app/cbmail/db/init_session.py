@@ -35,6 +35,9 @@ from cbmail.db.bootstrap_smtp import ensure_smtp_profiles
 from cbmail.db.models import (
     Base,
     CampaignSmtp,
+    ContactCard,
+    Correspondence,
+    CorrespondenceEvent,
     MailProject,
     Profile,
     Session,
@@ -48,7 +51,16 @@ logger = logging.getLogger(__name__)
 # ``mail_mailproject`` — новая таблица «проектов рассылки»; имя следует
 # Django-конвенции, поэтому старая копия (Django-миграция) и новая (этот
 # CREATE IF NOT EXISTS) сходятся к одной и той же схеме.
-_NEW_TABLES = (Session, Unsubscribe, MailProject, CampaignSmtp)
+_NEW_TABLES = (
+    Session,
+    Unsubscribe,
+    MailProject,
+    CampaignSmtp,
+    # Канцелярия (создаются идемпотентно; пусты при выключенном флаге).
+    Correspondence,
+    CorrespondenceEvent,
+    ContactCard,
+)
 
 # Колонки, добавляемые к СУЩЕСТВУЮЩЕЙ таблице SMTP-профилей. create() их не
 # трогает (таблица уже есть), поэтому добавляем точечным идемпотентным ALTER.

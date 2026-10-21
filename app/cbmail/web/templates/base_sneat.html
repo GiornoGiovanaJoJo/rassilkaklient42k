@@ -134,6 +134,11 @@
             <li class="menu-item {% if path.startswith('/templates') %}active{% endif %}">
               <a href="/templates/" class="menu-link"><div>Шаблоны</div></a>
             </li>
+            {% if correspondence_enabled %}
+            <li class="menu-item {% if path.startswith('/correspondence') %}active{% endif %}">
+              <a href="/correspondence/" class="menu-link"><div>Корреспонденция</div></a>
+            </li>
+            {% endif %}
             <li class="menu-item {% if path.startswith('/smtp') %}active{% endif %}">
               <a href="/smtp/" class="menu-link"><div>Настройки</div></a>
             </li>

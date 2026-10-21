@@ -27,6 +27,7 @@ from cbmail.web.errors import install_error_handlers
 from cbmail.web.routers import (
     account,
     campaigns,
+    correspondence,
     license,
     messages,
     misc,
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(license.router)
     app.include_router(auth_router.router)
     app.include_router(campaigns.router)
+    app.include_router(correspondence.router)
     app.include_router(messages.router)
     app.include_router(smtp.router)
     app.include_router(stoplist.router)
